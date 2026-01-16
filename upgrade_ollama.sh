@@ -3,14 +3,33 @@
 set -e
 set -o pipefail
 
-echo "🔄 Ollama 升级脚本 for FnOS, 脚本v2.1.1"
+echo "🔄 Ollama 升级脚本 for FnOS（适配 tar.zst 格式）, 脚本v2.1.2"
+
+# 0. 安装 zstd 依赖（群晖/软路由适配）
+install_zstd() {
+    echo "📦 检查 zstd 解压工具..."
+    if ! command -v zstd &>/dev/null; then
+        echo "⬇️ 安装 zstd 依赖..."
+        # 适配不同系统的包管理器
+        if command -v apt &>/dev/null; then
+            apt update && apt install -y zstd
+        elif command -v opkg &>/dev/null; then
+            opkg update && opkg install zstd
+        elif command -v pkg &>/dev/null; then
+            pkg install -y zstd
+        else
+            echo "❌ 无法自动安装 zstd，请手动安装后重试"
+            exit 1
+        fi
+    fi
+    echo "✅ zstd 已就绪"
+}
 
 # 1. 查找 Ollama 安装路径
 echo "🔍 查找 Ollama 安装路径..."
 VOL_PREFIXES=(/vol1 /vol2 /vol3 /vol4 /vol5 /vol6 /vol7 /vol8 /vol9)
 AI_INSTALLER=""
 
-# 遍历寻找 ollama 安装目录
 for vol in "${VOL_PREFIXES[@]}"; do
     if [ -d "$vol/@appcenter/ai_installer/ollama" ]; then
         AI_INSTALLER="$vol/@appcenter/ai_installer"
@@ -19,7 +38,6 @@ for vol in "${VOL_PREFIXES[@]}"; do
     fi
 done
 
-## 如果未找到主安装路径，则检查是否存在中断的备份
 if [ -z "$AI_INSTALLER" ]; then
     for vol in "${VOL_PREFIXES[@]}"; do
         testdir="$vol/@appcenter/ai_installer"
@@ -27,140 +45,120 @@ if [ -z "$AI_INSTALLER" ]; then
             cd "$testdir"
             LAST_BK=$(ls -td ollama_bk_* 2>/dev/null | head -n 1)
             if [ -n "$LAST_BK" ] && [ ! -d "ollama" ]; then
-                echo "⚠️ 检测到未完成的升级：$testdir 中存在备份 $LAST_BK，但当前没有 ollama/"
+                echo "⚠️ 检测到未完成的升级，恢复备份..."
                 mv "$LAST_BK" ollama
-                echo "✅ 已恢复 $LAST_BK 为 ollama/， 请重新执行本脚本更新"
-                if [ -x "./ollama/bin/ollama" ]; then
-                    ./ollama/bin/ollama --version
-                else
-                    echo "⚠️ 还原后未找到 ollama 可执行文件，可能备份不完整"
-                fi
-                exit 0  # ✅ 成功还原后立即退出整个脚本
+                echo "✅ 已恢复备份，请重新执行脚本"
+                [ -x "./ollama/bin/ollama" ] && ./ollama/bin/ollama --version
+                exit 0
             fi
         fi
     done
-
-    echo "❌ 未找到 Ollama 安装路径，也没有检测到可恢复的中断备份"
+    echo "❌ 未找到 Ollama 安装路径"
     exit 1
 fi
 
 cd "$AI_INSTALLER"
+install_zstd  # 安装解压依赖
 
 # 2. 打印当前版本
-echo "📦 正在检测当前 Ollama 客户端版本..."
-
-if [ -x "./ollama/bin/ollama" ]; then
-    VERSION_RAW=$(./ollama/bin/ollama --version 2>&1)
+echo "📦 检测当前 Ollama 版本..."
+OLLAMA_BIN="./ollama/bin/ollama"
+CLIENT_VER=""
+if [ -x "$OLLAMA_BIN" ]; then
+    VERSION_RAW=$($OLLAMA_BIN --version 2>&1)
     CLIENT_VER=$(echo "$VERSION_RAW" | grep -i "client version" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-
-    if [ -n "$CLIENT_VER" ]; then
-        echo "📦 当前已安装版本：v$CLIENT_VER（客户端）"
-    else
-        echo "⚠️ 无法获取版本号，原始输出如下："
-        echo "$VERSION_RAW"
-    fi
+    [ -n "$CLIENT_VER" ] && echo "📦 当前版本：v$CLIENT_VER" || echo "⚠️ 无法获取版本号：$VERSION_RAW"
 else
     echo "❌ 未找到 ollama 可执行文件"
 fi
 
-# 3. 下载最新版本
-FILENAME="ollama-linux-amd64.tgz"
+# 3. 获取最新版本 + 适配 tar.zst 下载
+FILENAME="ollama-linux-amd64.tar.zst"
 echo "🌐 获取 Ollama 最新版本号..."
-
-# 使用 GitHub API 获取最新版本号
-#LATEST_TAG=$(curl -s https://api.github.com/repos/ollama/ollama/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
-# 国内网络原因，或者代理，会遇到速率限制问题。 用一个小trick拉网页获取。
-LATEST_TAG=$(curl -s https://github.com/ollama/ollama/releases | grep -oP '/ollama/ollama/releases/tag/\K[^"]+' | head -n 1)
+LATEST_TAG=$(curl -s --connect-timeout 10 --retry 3 https://github.com/ollama/ollama/releases | grep -oP '/ollama/ollama/releases/tag/\K[^"]+' | head -n 1)
 
 if [ -z "$LATEST_TAG" ]; then
-    echo "❌ 无法从 GitHub 获取 Ollama 最新版本号，请检查网络连接或代理设置"
+    echo "❌ 无法获取最新版本，请检查网络/代理"
     exit 1
 fi
+echo "📦 最新版本：$LATEST_TAG"
+URL="https://github.com/ollama/ollama/releases/download/$LATEST_TAG/$FILENAME"
 
-echo "📦 最新版本号：$LATEST_TAG"
-# 补充：拼接正确的下载 URL（关键修复）
-URL="https://github.com/ollama/ollama/releases/download/$LATEST_TAG/ollama-linux-amd64.tgz"
-
-# 如果版本一致，退出升级
+# 版本一致则退出
 if [ "$CLIENT_VER" = "${LATEST_TAG#v}" ]; then
-    echo "✅ 当前已是最新版本（v$CLIENT_VER），无需升级。"
+    echo "✅ 当前已是最新版本（v$CLIENT_VER）"
+    [ -f "$FILENAME" ] && rm -f "$FILENAME"
     exit 0
 fi
 
-# 如果已有完整文件就跳过下载
+# 验证本地文件完整性
 if [ -f "$FILENAME" ]; then
-    echo "🔍 检测到本地已有 $FILENAME，验证完整性..."
-
-    if gzip -t "$FILENAME" 2>/dev/null; then
-        echo "✅ 本地压缩包完整，跳过下载"
-    else
+    echo "🔍 验证本地压缩包..."
+    if ! zstd -t "$FILENAME" 2>/dev/null; then
         echo "❌ 本地文件损坏，重新下载"
         rm -f "$FILENAME"
-    fi
-fi
-
-# 如果文件不存在才开始下载
-if [ ! -f "$FILENAME" ]; then
-    echo "⬇️ 正在下载版本 $LATEST_TAG ..."
-    if command -v aria2c >/dev/null 2>&1; then
-        echo "🚀 使用 aria2c 多线程下载..."
-        aria2c -x 16 -s 16 -k 1M -o "$FILENAME" "$URL"
     else
-        echo "⬇️ 使用 curl 单线程下载..."
-        curl -L -o "$FILENAME" "$URL"
+        echo "✅ 本地包完整，跳过下载"
     fi
 fi
 
+# 下载（多线程+重试）
+if [ ! -f "$FILENAME" ]; then
+    echo "⬇️ 下载 $LATEST_TAG 版本（tar.zst 格式）..."
+    DOWNLOAD_SUCCESS=0
+    # 优先 aria2c
+    if command -v aria2c >/dev/null; then
+        echo "🚀 使用 aria2c 多线程下载..."
+        aria2c -x 16 -s 16 -k 1M -o "$FILENAME" --retry-wait 3 --max-tries 3 "$URL" && DOWNLOAD_SUCCESS=1
+    fi
+    # 备用 curl
+    if [ $DOWNLOAD_SUCCESS -ne 1 ]; then
+        echo "⬇️ 使用 curl 单线程下载..."
+        curl -L --connect-timeout 10 --retry 3 -o "$FILENAME" "$URL" || {
+            echo "❌ 下载失败！请设置代理后重试："
+            echo "   export https_proxy=http://你的代理IP:端口"
+            rm -f "$FILENAME"
+            exit 1
+        }
+    fi
+fi
 
 # 4. 备份旧版本
 BACKUP_NAME="ollama_bk_$(date +%Y%m%d_%H%M%S)"
 mv ollama "$BACKUP_NAME"
-echo "📦 已备份原版 Ollama 为：$BACKUP_NAME"
+echo "📦 已备份旧版本为：$BACKUP_NAME"
 
-# 5. 解压部署新版本
-echo "📦 解压到 ollama/ ..."
+# 5. 解压 tar.zst（核心修复：替换解压命令）
+echo "📦 解压 tar.zst 包..."
 mkdir -p ollama
-tar -xzf "$FILENAME" -C ollama
+tar -I zstd -xf "$FILENAME" -C ollama --strip-components=1
+rm -f "$FILENAME"  # 清理压缩包
 
-# 6. 升级 pip 和 open-webui
-PIP_DIR="$AI_INSTALLER/python/bin"
-PYTHON_EXEC="/var/apps/ai_installer/target/python/bin/python3.12"
+# 6. 升级 pip 和 open-webui（容错处理）
+echo "⬆️ 升级 pip 和 Open-WebUI..."
+PYTHON_EXEC=""
+# 适配群晖 Python 路径
+if [ -d "$AI_INSTALLER/python/bin" ]; then
+    PYTHON_EXEC=$(find "$AI_INSTALLER/python/bin" -name "python3.*" -executable | head -n 1)
+fi
+[ -z "$PYTHON_EXEC" ] && PYTHON_EXEC=$(command -v python3 || command -v python)
 
-echo "⬆️ 正在升级 pip..."
-"$PYTHON_EXEC" -m pip install --upgrade pip || {
-    echo "❌ pip 升级失败，可能是网络问题或 GitHub 被墙"
-    echo "   请尝试设置代理后重新运行："
-    echo "   export https_proxy=http://127.0.0.1:7890"
-    echo "   export http_proxy=http://127.0.0.1:7890"
-    exit 1
-}
-
-echo "⬆️ 正在升级 open-webui..."
-cd "$PIP_DIR"
-./pip3 install --upgrade open_webui || {
-    echo "❌ open-webui 升级失败"
-    echo "🔎 常见原因：网络不通 / pip太旧 / 无法连接 PyPI"
-    echo "✔️ 可尝试设置代理或手动升级："
-    echo "   export https_proxy=http://127.0.0.1:7890"
-    echo "   export http_proxy=http://127.0.0.1:7890"
-    exit 1
-}
-
-# 7. 打印新版本确认
-cd "$AI_INSTALLER"
-
-if [ -x "./ollama/bin/ollama" ]; then
-    VERSION_RAW=$(./ollama/bin/ollama --version 2>&1)
-    CLIENT_VER=$(echo "$VERSION_RAW" | grep -i "client version" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-
-    if [ -n "$CLIENT_VER" ]; then
-        echo "✅ 新 Ollama 版本为：v$CLIENT_VER（客户端）"
-    else
-        echo "⚠️ 无法提取版本号，原始输出如下："
-        echo "$VERSION_RAW"
-    fi
+if [ -x "$PYTHON_EXEC" ]; then
+    $PYTHON_EXEC -m pip install --upgrade pip --timeout 30 --retries 2 || echo "⚠️ pip 升级失败（不影响核心功能）"
+    $PYTHON_EXEC -m pip install --upgrade open_webui --timeout 30 --retries 2 || echo "⚠️ Open-WebUI 升级失败，可手动升级"
 else
-    echo "❌ 未找到 ollama 可执行文件"
+    echo "⚠️ 未找到 Python，跳过 Open-WebUI 升级"
 fi
 
-echo "🎉 升级完成！Ollama 与 open-webui 均为最新版本。"
+# 7. 验证新版本
+if [ -x "$OLLAMA_BIN" ]; then
+    VERSION_RAW=$($OLLAMA_BIN --version 2>&1)
+    NEW_VER=$(echo "$VERSION_RAW" | grep -i "client version" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+    [ -n "$NEW_VER" ] && echo "✅ 升级完成！新版本：v$NEW_VER" || echo "✅ 升级完成，版本信息：$VERSION_RAW"
+else
+    echo "❌ 解压失败，自动回滚备份..."
+    mv "$BACKUP_NAME" ollama
+    exit 1
+fi
+
+echo "🎉 Ollama 升级完成！请重启 Ollama 服务生效。"
