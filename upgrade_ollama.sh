@@ -78,6 +78,8 @@ if [ -z "$LATEST_TAG" ]; then
 fi
 
 echo "📦 最新版本号：$LATEST_TAG"
+# 补充：拼接正确的下载 URL（关键修复）
+URL="https://github.com/ollama/ollama/releases/download/$LATEST_TAG/ollama-linux-amd64.tgz"
 
 # 如果版本一致，退出升级
 if [ "$CLIENT_VER" = "${LATEST_TAG#v}" ]; then
