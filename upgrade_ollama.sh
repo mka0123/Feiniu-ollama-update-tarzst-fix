@@ -132,27 +132,6 @@ else
     exit 1
 fi
 
-# 6. 升级 pip 和 open-webui
-PIP_DIR="$AI_INSTALLER/python/bin"
-PYTHON_EXEC="/var/apps/ai_installer/target/python/bin/python3.12"
-
-echo "⬆️ 正在升级 pip..."
-"$PYTHON_EXEC" -m pip install --upgrade pip || {
-    echo "❌ pip 升级失败，可能是网络问题或 GitHub 被墙"
-    echo "   export https_proxy=http://127.0.0.1:7890"
-    echo "   export http_proxy=http://127.0.0.1:7890"
-    exit 1
-}
-
-echo "⬆️ 正在升级 open-webui..."
-cd "$PIP_DIR"
-./pip3 install --upgrade open_webui || {
-    echo "❌ open-webui 升级失败"
-    echo "   export https_proxy=http://127.0.0.1:7890"
-    echo "   export http_proxy=http://127.0.0.1:7890"
-    exit 1
-}
-
 # 7. 打印新版本确认
 cd "$AI_INSTALLER"
 
