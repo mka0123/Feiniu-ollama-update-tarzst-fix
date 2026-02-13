@@ -4,7 +4,6 @@ set -e
 set -o pipefail
 
 echo "🔄 Ollama 升级脚本 for FnOS, 脚本v2.1.5，修复后缀、aria2c报错、LATEST_TAG 脏值"
-
 # 1. 查找 Ollama 安装路径
 echo "🔍 查找 Ollama 安装路径..."
 VOL_PREFIXES=(/vol1 /vol2 /vol3 /vol4 /vol5 /vol6 /vol7 /vol8 /vol9)
