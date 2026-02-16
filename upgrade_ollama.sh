@@ -131,7 +131,7 @@ else
     exit 1
 fi
 
-# 7. 打印新版本确认
+# 6. 打印新版本确认
 cd "$AI_INSTALLER"
 
 if [ -x "./ollama/bin/ollama" ]; then
@@ -148,4 +148,4 @@ else
     echo "❌ 未找到 ollama 可执行文件"
 fi
 
-echo "🎉 升级完成！Ollama 与 open-webui 均为最新版本。"
+echo "🎉 升级完成！Ollama为最新版本，Open WebUI未更新。"
